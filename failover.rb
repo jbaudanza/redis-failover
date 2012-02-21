@@ -6,6 +6,8 @@ require 'logger'
 class Failover
   attr_accessor :logger
 
+  @@client_id = 0
+
   def initialize(options={})
     @options = {
       :on_failure => lambda{}
@@ -20,6 +22,9 @@ class Failover
     end
 
     connect
+
+    @client_id = @@client_id
+    @@client_id += 1
   end
 
   def logger
@@ -41,9 +46,12 @@ class Failover
       # XXX: Disconnect redis socket
     end
 
-    @slave.incr('failover:clients:id') do |result|
-      @client_id = result
+    @master.callback do
+      ping_master
+      schedule_health_check
+    end
 
+    @slave.callback do
       EM.cancel_timer(connection_timeout)
 
       @slave.info do |result|
@@ -59,9 +67,8 @@ class Failover
           if @master.host == result[:master_host] &&
              @master.port == result[:master_port].to_i
 
+            # This key won't exist in the nomimal case
             @slave.del 'failover:promoted_at'
-            schedule_ping
-            schedule_health_check
 
             callback(:on_connect, @options[:master])
           else
@@ -75,15 +82,41 @@ class Failover
       end
     end
 
-    @subscriber.subscribe 'failover:promoted'
+    # XXX: It would be nice if em-hiredis allowed you to subscribe to multiple
+    # channels at once
+    ['failover:promoted',
+     'failover:gossip_request',
+     'failover:gossip_response'].each do |channel|
+      @subscriber.subscribe(channel)
+    end
 
-    @subscriber.on(:message) do |result, param|
-      logger.warn("MASTER host failed. SLAVE promoted by #{param}")
-      callback(:on_connect, @options[:slave])
+    @subscriber.on(:message) do |channel, param|
+      case channel
+      when 'failover:promoted'
+        logger.warn("MASTER host failed. SLAVE promoted by #{param}")
+        @master.close_connection
+        @subscriber.close_connection
+        callback(:on_connect, @options[:slave])
+      when 'failover:gossip_request'
+        on_gossip_request(param)
+      when 'failover:gossip_response'
+        on_gossip_response(param)
+      end
     end
   end
 
   private
+
+  def on_gossip_request(sender_id)
+    logger.info("gossip request received from #{sender_id}")
+    if seen_master_recently?
+      @slave.publish 'failover:gossip_response', client_id
+    end
+  end
+
+  def on_gossip_response(sender_id)
+    @probation = false
+  end
 
   def callback(symbol, *args)
     if @options[symbol]
@@ -92,7 +125,8 @@ class Failover
   end
 
   def schedule_ping
-    EM.add_timer(1) { ping }
+    # XXX: Magic number
+    EM.add_timer(1) { ping_master }
   end
 
   def schedule_health_check
@@ -101,14 +135,27 @@ class Failover
     end
   end
 
-  def ping
+  def ping_master
+    puts "ping #{client_id}"
     @master.ping do |result|
-      @slave.zadd('failover:pongs', Time.now.to_i, @client_id)
+      puts "pong"
+      @last_pong = Time.now.to_i
       schedule_ping
     end
   end
 
-  def switch_to_master
+  def last_pong_age
+    if @last_pong
+      Time.now.to_i - @last_pong
+    end
+  end
+
+  def seen_master_recently?
+    # XXX Magic Number
+    last_pong_age < 10 if @last_pong
+  end
+
+  def promote_slave
     @slave.exists 'failover:promoted_at' do |result|
       if result == 0
         @slave.watch 'failover:promoted_at'
@@ -116,7 +163,7 @@ class Failover
           if !result
             @slave.multi
             @slave.set 'failover:promoted_at', Time.now
-            @slave.publish 'failover:promoted', "#{Socket.gethostname}-#{$$}"
+            @slave.publish 'failover:promoted', client_id
             @slave.slaveof 'NO', 'ONE'
             @slave.exec do |result|
               if result
@@ -129,18 +176,25 @@ class Failover
     end
   end
 
-  def check_health
-    @slave.zremrangebyscore('failover:pongs', '-inf', Time.now.to_i - 5)
+  def client_id
+    "#{Socket.gethostname}-#{$$}-#{@client_id}"
+  end
 
-    @slave.zcard('failover:pongs') do |result|
-      puts "Count #{result}"
-      count = result.to_i
-      if count == 0
-        switch_to_master
+  def check_health
+    puts "health check #{client_id}"
+
+    if not seen_master_recently?
+      if @probation
+        promote_slave
+        return
       else
-        schedule_health_check
+        logger.info("putting master on probation")
+        @probation = true
+        @slave.publish 'failover:gossip_request', client_id
       end
     end
+
+    schedule_health_check
   end
 end
 

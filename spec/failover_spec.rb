@@ -5,6 +5,10 @@ MASTER_URL = 'redis://localhost:9010/0'
 SLAVE_URL = 'redis://localhost:9011/0'
 
 describe Failover do
+  around(:each) do |example|
+    run_with_em(&example)
+  end
+
   describe "when the master and the slave are alive" do
     before(:all) do
       start_master
@@ -12,19 +16,17 @@ describe Failover do
     end
 
     it "should connect successfully" do
-      run_with_em do
-        Failover.new(
-          :master => MASTER_URL,
-          :slave => SLAVE_URL,
-          :on_connect => lambda{ |url|
-            url.should == MASTER_URL
-            EM.stop_event_loop
-          },
-          :on_failover => lambda {
-            puts "Failure detected!"
-          }
-        )
-      end
+      Failover.new(
+        :master => MASTER_URL,
+        :slave => SLAVE_URL,
+        :on_connect => lambda{ |url|
+          url.should == MASTER_URL
+          EM.stop_event_loop
+        },
+        :on_failover => lambda {
+          puts "Failure detected!"
+        }
+      )
     end
 
     after(:all) do
@@ -59,18 +61,15 @@ describe Failover do
         }
       }
 
-      run_with_em do
-        client1 = Failover.new(options)
-        client2 = Failover.new(options)
+      client1 = Failover.new(options)
+      client2 = Failover.new(options)
 
-        EM.add_timer(1) do
-          on_connect_count = 0
-          test = true
-          kill_redis('master')
-        end
+      EM.add_timer(1) do
+        on_connect_count = 0
+        test = true
+        kill_redis('master')
       end
 
-      on_connect_count.should == 2
     end
 
     after(:all) do
@@ -104,9 +103,7 @@ describe Failover do
         }
       }
 
-      run_with_em do
-        client = Failover.new(options)
-      end
+      client = Failover.new(options)
 
       pending
     end

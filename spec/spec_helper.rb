@@ -50,7 +50,7 @@ end
 # EM::stop_event_loop is called
 def run_with_em
   EventMachine::run do
-    EM.add_timer(10) do
+    EM.add_timer(60) do
       puts "Test timed out"
       false.should be_true
     end
