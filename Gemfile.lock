@@ -1,0 +1,11 @@
+GEM
+  specs:
+    em-hiredis (0.1.0)
+      hiredis (~> 0.3.0)
+    hiredis (0.3.2)
+
+PLATFORMS
+  ruby
+
+DEPENDENCIES
+  em-hiredis
