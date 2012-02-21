@@ -16,7 +16,7 @@ describe Failover do
     end
 
     it "should connect successfully" do
-      Failover.new(
+      failover = Failover.new(
         :master => MASTER_URL,
         :slave => SLAVE_URL,
         :on_connect => lambda{ |url|
@@ -42,31 +42,20 @@ describe Failover do
     end
 
     it "should fail over to the slave" do
-      on_connect_count = 0
-      test = false
-
       options = {
         :master => MASTER_URL,
-        :slave => SLAVE_URL,
-        :on_failover => lambda {
-        },
-        :on_connect => lambda { |url|
-          if test
-            url.should == SLAVE_URL
-            on_connect_count += 1
-            EM.add_timer(1) {
-              EM.stop_event_loop
-            }
-          end
-        }
+        :slave => SLAVE_URL
       }
 
       client1 = Failover.new(options)
       client2 = Failover.new(options)
 
       EM.add_timer(1) do
-        on_connect_count = 0
-        test = true
+        client1.on(:connected) do |redis|
+          redis.port.should == REDIS_SLAVE_PORT
+          EM.stop_event_loop
+        end
+
         kill_redis('master')
       end
 

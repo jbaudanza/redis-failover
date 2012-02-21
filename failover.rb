@@ -4,6 +4,8 @@ require 'socket'
 require 'logger'
 
 class Failover
+  include EventMachine::Hiredis::EventEmitter
+
   attr_accessor :logger
 
   @@client_id = 0
@@ -31,10 +33,6 @@ class Failover
     @options[:logger]
   end
 
-  def on_slave_connect_failure
-    callback(:on_connect, @options[:master])
-  end
-
   def connect
     @master = EM::Hiredis.connect(@options[:master])
     @slave = EM::Hiredis.connect(@options[:slave])
@@ -48,8 +46,10 @@ class Failover
 
     @master.callback do
       ping_master
-      schedule_health_check
+      emit(:connected, @master)
     end
+
+    schedule_health_check
 
     @slave.callback do
       EM.cancel_timer(connection_timeout)
@@ -62,21 +62,19 @@ class Failover
 
         if result[:role] == 'master'
           logger.warn("Slave has previously been promoted to master.")
-          callback(:on_connect, @options[:slave])
+          @master.close_connection
+          @subscriber.close_connection
+          emit(:connected, @slave)
         else
           if @master.host == result[:master_host] &&
              @master.port == result[:master_port].to_i
 
             # This key won't exist in the nomimal case
             @slave.del 'failover:promoted_at'
-
-            callback(:on_connect, @options[:master])
           else
             logger.warn(
                 "Expected slave to be connected to #{@options[:master]}, " +
                 "but instead is #{result[:master_host]}:#{result[:master_port]}")
-
-            on_slave_connect_failure
           end
         end
       end
@@ -96,7 +94,7 @@ class Failover
         logger.warn("MASTER host failed. SLAVE promoted by #{param}")
         @master.close_connection
         @subscriber.close_connection
-        callback(:on_connect, @options[:slave])
+        emit(:connected, @slave)
       when 'failover:gossip_request'
         on_gossip_request(param)
       when 'failover:gossip_response'
@@ -118,12 +116,6 @@ class Failover
     @probation = false
   end
 
-  def callback(symbol, *args)
-    if @options[symbol]
-      @options[symbol].call(*args)
-    end
-  end
-
   def schedule_ping
     # XXX: Magic number
     EM.add_timer(1) { ping_master }
@@ -136,18 +128,14 @@ class Failover
   end
 
   def ping_master
-    puts "ping #{client_id}"
     @master.ping do |result|
-      puts "pong"
       @last_pong = Time.now.to_i
       schedule_ping
     end
   end
 
   def last_pong_age
-    if @last_pong
-      Time.now.to_i - @last_pong
-    end
+    Time.now.to_i - @last_pong if @last_pong
   end
 
   def seen_master_recently?
@@ -162,12 +150,12 @@ class Failover
         @slave.get 'failover:promoted_at' do |result|
           if !result
             @slave.multi
-            @slave.set 'failover:promoted_at', Time.now
+            @slave.set 'failover:promoted_at', Time.now.to_i
             @slave.publish 'failover:promoted', client_id
             @slave.slaveof 'NO', 'ONE'
             @slave.exec do |result|
               if result
-                callback(:on_failover)
+                emit(:failover)
               end
             end
           end
@@ -181,14 +169,12 @@ class Failover
   end
 
   def check_health
-    puts "health check #{client_id}"
-
     if not seen_master_recently?
       if @probation
         promote_slave
         return
       else
-        logger.info("putting master on probation")
+        logger.warn("putting master on probation")
         @probation = true
         @slave.publish 'failover:gossip_request', client_id
       end
@@ -197,17 +183,3 @@ class Failover
     schedule_health_check
   end
 end
-
-
-# EventMachine::run do
-#   Failover.new(
-#     :master => 'redis://localhost:6379/0',
-#     :slave => 'redis://localhost:6380/0',
-#     :on_connect => lambda{ |url|
-#       puts "Connecting to #{url}"
-#     },
-#     :on_failover => lambda {
-#       puts "Failure detected!"
-#     }
-#   )
-# end
