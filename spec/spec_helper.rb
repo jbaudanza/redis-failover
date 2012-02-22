@@ -12,7 +12,7 @@ def start_slave
 end
 
 def start_redis(type, port, extra_config=nil)
-  puts "Starting redis #{type}"
+  #puts "Starting redis #{type}"
 
   config =<<-EOF
     dbfilename /tmp/redis-#{type}.rdb
@@ -35,7 +35,7 @@ def kill_redis(type)
 
   redis_pid = File.read(pid_file)
   if redis_pid
-    puts "Killing redis #{type} #{redis_pid}"
+    #puts "Killing redis #{type} #{redis_pid}"
     begin
       Process.kill "TERM", redis_pid.to_i
     rescue Errno::ESRCH # process not found

@@ -22,14 +22,13 @@ Questions
 
 
 
-# TODO: 
+== TODO: 
  - Handle the case when the slave is down
  - Perhaps a "grace period" after startup
  - Merge timers into 1
  - gemify
- - is there a way to sync clocks?
- - client shouldn't check sorted set unless master is unreachable
- - Allow callers to use the current redis connection
+ - add a test for the scenario when one client can cannot and the other client cannot
+ - perhaps these log warnings should be errors
 
 
 Look at this for tips:

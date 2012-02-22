@@ -9,6 +9,12 @@ describe Failover do
     run_with_em(&example)
   end
 
+  before(:each) do
+    @options = {
+      :master => MASTER_URL, :slave => SLAVE_URL
+    }
+  end
+
   describe "when the master and the slave are alive" do
     before(:all) do
       start_master
@@ -16,17 +22,12 @@ describe Failover do
     end
 
     it "should connect successfully" do
-      failover = Failover.new(
-        :master => MASTER_URL,
-        :slave => SLAVE_URL,
-        :on_connect => lambda{ |url|
-          url.should == MASTER_URL
-          EM.stop_event_loop
-        },
-        :on_failover => lambda {
-          puts "Failure detected!"
-        }
-      )
+      failover = Failover.new(@options)
+
+      failover.on(:connected) do |redis|
+        redis.port.should == REDIS_MASTER_PORT
+        EM.stop_event_loop
+      end
     end
 
     after(:all) do
@@ -42,19 +43,31 @@ describe Failover do
     end
 
     it "should fail over to the slave" do
-      options = {
-        :master => MASTER_URL,
-        :slave => SLAVE_URL
-      }
+      client1 = Failover.new(@options)
+      client2 = Failover.new(@options)
 
-      client1 = Failover.new(options)
-      client2 = Failover.new(options)
+      on_connected_count = 0
+      on_failover_count = 0
 
-      EM.add_timer(1) do
-        client1.on(:connected) do |redis|
-          redis.port.should == REDIS_SLAVE_PORT
+      on_connected = lambda do |redis|
+        redis.port.should == REDIS_SLAVE_PORT
+        on_connected_count += 1
+
+        if on_connected_count == 2
+          on_failover_count.should == 1
           EM.stop_event_loop
         end
+      end
+
+      on_failover = lambda do
+        on_failover_count += 1
+      end
+
+      EM.add_timer(1) do
+        client1.on(:connected, &on_connected)
+        client2.on(:connected, &on_connected)
+        client1.on(:failover, &on_failover)
+        client2.on(:failover, &on_failover)
 
         kill_redis('master')
       end
@@ -71,7 +84,12 @@ describe Failover do
       start_slave
     end
     it "should fail over to the slave" do
-      pending
+      failover = Failover.new(@options)
+
+      failover.on(:connected) do |redis|
+        redis.port.should == REDIS_SLAVE_PORT
+        EM.stop_event_loop
+      end
     end
     after(:all) do
       kill_redis("slave")
@@ -85,25 +103,17 @@ describe Failover do
     it "should connect to the master" do
       options = {
         :master => MASTER_URL,
-        :slave => SLAVE_URL,
-        :on_failover => lambda {},
-        :on_connect => lambda { |url|
-          url.should == MASTER_URL
-        }
+        :slave => SLAVE_URL
       }
 
-      client = Failover.new(options)
-
-      pending
+      failover = Failover.new(options)
+      failover.on(:connected) do |redis|
+        redis.port.should == REDIS_MASTER_PORT
+        EM.stop_event_loop
+      end
     end
     after(:all) do
       kill_redis("master")
-    end
-  end
-
-  describe "when the client is started with a failed slave and master" do
-    it "should raise an error" do
-      pending
     end
   end
 end

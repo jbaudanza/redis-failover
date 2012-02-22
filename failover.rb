@@ -11,13 +11,9 @@ class Failover
   @@client_id = 0
 
   def initialize(options={})
-    @options = {
-      :on_failure => lambda{}
-    }.merge(options)
-
-    raise ArgumentError("onconnect option required") unless @options[:master]
+    @options = options
     raise ArgumentError("master option required") unless @options[:master]
-    raise ArgumentError("slave option required") unless @options[:master]
+    raise ArgumentError("slave option required") unless @options[:slave]
 
     if !@options[:logger]
       @options[:logger] = Logger.new(STDERR)
@@ -38,28 +34,17 @@ class Failover
     @slave = EM::Hiredis.connect(@options[:slave])
     @subscriber = EM::Hiredis.connect(@options[:slave])
 
-    # XXX: Pick a better timeout value
-    connection_timeout = EM.add_timer(1) do |result|
-      puts "Timeout!"
-      # XXX: Disconnect redis socket
-    end
-
     @master.callback do
       ping_master
       emit(:connected, @master)
     end
 
+    # XXX: It should not be possible to start this timer twice.  This should
+    # perhaps be periodic or only when the slave is connected
     schedule_health_check
 
     @slave.callback do
-      EM.cancel_timer(connection_timeout)
-
       @slave.info do |result|
-        # XXX Handle the case where the slave is down but the master is up
-        # XXX verify that the slave is connected to the right master
-        # puts result[:master_host]
-        # puts result[:master_port]
-
         if result[:role] == 'master'
           logger.warn("Slave has previously been promoted to master.")
           @master.close_connection
@@ -73,14 +58,14 @@ class Failover
             @slave.del 'failover:promoted_at'
           else
             logger.warn(
-                "Expected slave to be connected to #{@options[:master]}, " +
-                "but instead is #{result[:master_host]}:#{result[:master_port]}")
+                "Expected slave to be connected to #{@options[:master]}, but " +
+                "instead is #{result[:master_host]}:#{result[:master_port]}")
           end
         end
       end
     end
 
-    # XXX: It would be nice if em-hiredis allowed you to subscribe to multiple
+    # It would be nice if em-hiredis allowed you to subscribe to multiple
     # channels at once
     ['failover:promoted',
      'failover:gossip_request',
@@ -88,34 +73,39 @@ class Failover
       @subscriber.subscribe(channel)
     end
 
-    @subscriber.on(:message) do |channel, param|
+    @subscriber.on(:message) do |channel, sender_id|
       case channel
       when 'failover:promoted'
-        logger.warn("MASTER host failed. SLAVE promoted by #{param}")
-        @master.close_connection
-        @subscriber.close_connection
-        emit(:connected, @slave)
+        on_slave_promoted(sender_id)
       when 'failover:gossip_request'
-        on_gossip_request(param)
+        on_gossip_request(sender_id)
       when 'failover:gossip_response'
-        on_gossip_response(param)
+        # XXX: Should the response update the @last_pong value? This would
+        # probably be a good idea
+        logger.info("gossip response receieved from #{sender_id}")
+        take_master_off_probation
       end
     end
   end
 
   private
 
+  def on_slave_promoted(sender_id)
+    logger.warn("MASTER host failed. SLAVE promoted by #{sender_id}")
+    @master.close_connection
+    @subscriber.close_connection
+    emit(:connected, @slave)
+  end
+
   def on_gossip_request(sender_id)
+    return if sender_id == client_id
+
     logger.info("gossip request received from #{sender_id}")
     if seen_master_recently?
       @slave.publish 'failover:gossip_response', client_id
     end
   end
-
-  def on_gossip_response(sender_id)
-    @probation = false
-  end
-
+  
   def schedule_ping
     # XXX: Magic number
     EM.add_timer(1) { ping_master }
@@ -128,7 +118,15 @@ class Failover
   end
 
   def ping_master
-    @master.ping do |result|
+    d = @master.ping 
+
+    d.errback do |error|
+      logger.error("redis ping failed: #{error}")
+      put_master_on_probation
+    end
+
+    d.callback do |result|
+      take_master_off_probation
       @last_pong = Time.now.to_i
       schedule_ping
     end
@@ -143,6 +141,14 @@ class Failover
     last_pong_age < 10 if @last_pong
   end
 
+  def seconds_on_probation
+    Time.now.to_i - @probation_at if is_on_probation?
+  end
+
+  def is_on_probation?
+    !!@probation_at
+  end
+
   def promote_slave
     @slave.exists 'failover:promoted_at' do |result|
       if result == 0
@@ -154,9 +160,7 @@ class Failover
             @slave.publish 'failover:promoted', client_id
             @slave.slaveof 'NO', 'ONE'
             @slave.exec do |result|
-              if result
-                emit(:failover)
-              end
+              emit(:failover) if result
             end
           end
         end
@@ -168,16 +172,29 @@ class Failover
     "#{Socket.gethostname}-#{$$}-#{@client_id}"
   end
 
+  def put_master_on_probation
+    return if is_on_probation?
+    @probation_at = Time.now.to_i
+    @last_pong = nil
+    @slave.publish('failover:gossip_request', client_id)
+    logger.warn("putting master on probation")
+  end
+
+  def take_master_off_probation
+    if is_on_probation?
+      @probation_at = nil
+      logger.info('Taking master off of probation')
+    end
+  end
+
   def check_health
-    if not seen_master_recently?
-      if @probation
+    if is_on_probation?
+      if seconds_on_probation > 10
         promote_slave
         return
-      else
-        logger.warn("putting master on probation")
-        @probation = true
-        @slave.publish 'failover:gossip_request', client_id
       end
+    elsif not seen_master_recently?
+      put_master_on_probation
     end
 
     schedule_health_check
