@@ -41,7 +41,7 @@ describe Failover do
             deferrable = EM::DefaultDeferrable.new
             deferrable.fail('oh noez')
 
-            @master.should_receive(:ping).and_return(deferrable)
+            @master.should_receive(:ping).at_least(:once).and_return(deferrable)
           end
         end
 

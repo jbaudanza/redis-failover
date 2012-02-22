@@ -34,14 +34,19 @@ class Failover
     @slave = EM::Hiredis.connect(@options[:slave])
     @subscriber = EM::Hiredis.connect(@options[:slave])
 
+    @current_connection = @master
+
+    @failed = false
+
+    # XXX: Magic number, and too often
+    @timer = EM.add_periodic_timer(1) do
+      on_timer
+    end
+
     @master.callback do
       ping_master
       emit(:connected, @master)
     end
-
-    # XXX: It should not be possible to start this timer twice.  This should
-    # perhaps be periodic or only when the slave is connected
-    schedule_health_check
 
     @slave.callback do
       @slave.info do |result|
@@ -57,9 +62,10 @@ class Failover
             # This key won't exist in the nomimal case
             @slave.del 'failover:promoted_at'
           else
-            # XXX: in this case, all failover functionality must be disabled.
-            # Also update the test to find anohter way to simulate the master
-            # being unreachable
+            @slave.close_connection
+            @subscriber.close_connection
+            @current_connection = @master
+            fail
             logger.warn(
                 "Expected slave to be connected to #{@options[:master]}, but " +
                 "instead is #{result[:master_host]}:#{result[:master_port]}")
@@ -93,13 +99,19 @@ class Failover
     end
   end
 
+  def connection
+    @current_connection
+  end
+
   private
 
   def on_slave_promoted(sender_id)
     logger.warn("MASTER host failed. SLAVE promoted by #{sender_id}")
     @master.close_connection
     @subscriber.close_connection
-    emit(:connected, @slave)
+    fail
+    @current_connection = @slave
+    emit(:connected, @current_connection)
   end
 
   def on_gossip_request(sender_id)
@@ -108,17 +120,6 @@ class Failover
     logger.info("gossip request received from #{sender_id}")
     if seen_master_recently?
       @slave.publish 'failover:gossip_response', client_id
-    end
-  end
-
-  def schedule_ping
-    # XXX: Magic number
-    EM.add_timer(1) { ping_master }
-  end
-
-  def schedule_health_check
-    EM.add_timer(5) do
-      check_health
     end
   end
 
@@ -133,7 +134,20 @@ class Failover
     d.callback do |result|
       take_master_off_probation
       @last_pong = Time.now.to_i
-      schedule_ping
+    end
+  end
+
+  def on_timer
+    return if @failed
+
+    ping_master
+
+    if is_on_probation?
+      if seconds_on_probation > 10
+        promote_slave
+      end
+    elsif not seen_master_recently?
+      put_master_on_probation
     end
   end
 
@@ -177,6 +191,11 @@ class Failover
     "#{Socket.gethostname}-#{$$}-#{@client_id}"
   end
 
+  def fail
+    @failed = true
+    EM.cancel_timer(@timer)
+  end
+
   def put_master_on_probation
     return if is_on_probation?
     @probation_at = Time.now.to_i
@@ -190,18 +209,5 @@ class Failover
       @probation_at = nil
       logger.info('Taking master off of probation')
     end
-  end
-
-  def check_health
-    if is_on_probation?
-      if seconds_on_probation > 10
-        promote_slave
-        return
-      end
-    elsif not seen_master_recently?
-      put_master_on_probation
-    end
-
-    schedule_health_check
   end
 end
