@@ -30,6 +30,35 @@ describe Failover do
       end
     end
 
+    describe "when only one client cannot connect" do
+      it "should not failover" do
+        good_client = Failover.new(@options)
+        bad_client = Failover.new(@options)
+
+        # Block pings but only from the bad client
+        EM.add_timer(1) do
+          bad_client.instance_eval do
+            deferrable = EM::DefaultDeferrable.new
+            deferrable.fail('oh noez')
+
+            @master.should_receive(:ping).and_return(deferrable)
+          end
+        end
+
+        good_client.on(:failover) do
+          false.should_not be_true
+        end
+        bad_client.on(:failover) do
+          false.should_not be_true
+        end
+
+        # XXX: can we make this timeout shorter
+        EM.add_timer(15) do
+          EM.stop_event_loop
+        end
+      end
+    end
+
     after(:all) do
       kill_redis("master")
       kill_redis("slave")

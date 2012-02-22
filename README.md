@@ -27,7 +27,6 @@ Questions
  - Perhaps a "grace period" after startup
  - Merge timers into 1
  - gemify
- - add a test for the scenario when one client can cannot and the other client cannot
  - perhaps these log warnings should be errors
 
 

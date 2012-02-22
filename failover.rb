@@ -57,6 +57,9 @@ class Failover
             # This key won't exist in the nomimal case
             @slave.del 'failover:promoted_at'
           else
+            # XXX: in this case, all failover functionality must be disabled.
+            # Also update the test to find anohter way to simulate the master
+            # being unreachable
             logger.warn(
                 "Expected slave to be connected to #{@options[:master]}, but " +
                 "instead is #{result[:master_host]}:#{result[:master_port]}")
@@ -82,8 +85,10 @@ class Failover
       when 'failover:gossip_response'
         # XXX: Should the response update the @last_pong value? This would
         # probably be a good idea
-        logger.info("gossip response receieved from #{sender_id}")
-        take_master_off_probation
+        if sender_id != client_id
+          logger.info("gossip response receieved from #{sender_id}")
+          take_master_off_probation
+        end
       end
     end
   end
@@ -105,7 +110,7 @@ class Failover
       @slave.publish 'failover:gossip_response', client_id
     end
   end
-  
+
   def schedule_ping
     # XXX: Magic number
     EM.add_timer(1) { ping_master }
