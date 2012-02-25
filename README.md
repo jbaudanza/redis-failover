@@ -1,35 +1,38 @@
-== Client slave promotion algorithm ==
-When a client tries to write:
+redis-failover provides failover functionality for EventMachine clients
+communicating with a master-slave redis configuration.
 
-- Perform Write
+How it works:
+Each client maintains a connection to both the master and slave redis server.
 
-- If write fails
-  - Ask the slave if the master is down
-  - If slave says the master is down
-     - Promote slave to master
-     - Continue Write
-  - If the slave is down, Fatal error
+Each client periodically sends PING commands to the master. If the master fails
+to respond to a client, the client use a PUBSUB channel on the slave to ask if
+any other clients has seen the master.
 
-Questions
-- Perhaps other clients should poll the slave to see if it has been promoted
-- How does the redis client handle writes.  Will it buffer them until a connection is made?
-- Perhaps clients should continually poll to detect a failure before something in the app does
-- Can we detect EC2 rolling reboots and do a pre-emptive slave promotion?
-- Client can use the slave channels to gossip with other clients
-- When a master crashes, and then comes back online, it should be smart enough to become a slave of the new master
-- Is it possible to have redis guarantee that slaves are updated before accepting a write?
-- em-hiredis doesn't propagate connection failures to the client..
+If no other clients respond, the client will promote the SLAVE and issue a
+PUBLISH message to the other clients.
 
+Limitations:
+- Only one slave is supported
+- Any client can institute a failover.  There is no attempt to reach "quorum"
+- No attempt is made to maintain any data consistency after a failover.
 
+Usage:
+
+The failover works by calling two callbacks, `connected` and `failover`.
+
+    failover = Failover.new
+
+    # This is called when a connection to a master or a slave is made.
+    failover.on(:connected) do |redis|
+      # Do your thing
+    end
+
+    # This is called when a client initiates a failover. This callback will
+    # only happen on one client.
+    failover.on(:connected) do |redis|
+      # Send an alert to an administrator
+    end
 
 == TODO:
- - Add some kind of "confirmation" step from another peer, perhaps from another availability zone
- - Handle the case when the slave is down
- - Perhaps a "grace period" after startup
- - Merge timers into 1
+ - configuration options
  - gemify
- - perhaps these log warnings should be errors
-
-
-Look at this for tips:
-https://github.com/zealot2007/redis-cluster-monitor

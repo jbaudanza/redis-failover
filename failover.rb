@@ -38,7 +38,6 @@ class Failover
     @failed = false
 
     # XXX: Magic number, and too often
-    # XXX: Make this a weak reference?
     @timer = EM.add_periodic_timer(1) do
       on_timer
     end
@@ -68,7 +67,7 @@ class Failover
             @subscriber.close_connection
             @current_connection = @master
             enter_failed_state
-            logger.warn(
+            logger.error(
                 "Expected slave to be connected to #{@options[:master]}, but " +
                 "instead is #{result[:master_host]}:#{result[:master_port]}")
           end
@@ -103,7 +102,7 @@ class Failover
   private
 
   def on_slave_promoted(sender_id)
-    logger.warn("MASTER host failed. SLAVE promoted by #{sender_id}")
+    logger.error("MASTER host failed. SLAVE promoted by #{sender_id}")
     @master.close_connection
     @subscriber.close_connection
     enter_failed_state
