@@ -1,3 +1,6 @@
+Overfiew
+========
+
 redis-failover provides failover functionality for EventMachine clients
 communicating with a master-slave redis configuration.
 
@@ -31,7 +34,7 @@ failover = Failover.new
 # The connected callback will be made when an initial connection is made to
 # the master, and then again if a failover happens.
 failover.on(:connected) do |redis|
-  # Do your thing
+  # Do your thing. redis is an instance of EM::Hiredis::Client
 end
 
 # This is called when a client initiates a failover. This callback will
