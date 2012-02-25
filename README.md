@@ -22,7 +22,8 @@ Questions
 
 
 
-== TODO: 
+== TODO:
+ - Add some kind of "confirmation" step from another peer, perhaps from another availability zone
  - Handle the case when the slave is down
  - Perhaps a "grace period" after startup
  - Merge timers into 1

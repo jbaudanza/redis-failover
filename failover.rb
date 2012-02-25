@@ -21,8 +21,7 @@ class Failover
 
     connect
 
-    @client_id = @@client_id
-    @@client_id += 1
+    @client_id = @@client_id += 1
   end
 
   def logger
@@ -39,6 +38,7 @@ class Failover
     @failed = false
 
     # XXX: Magic number, and too often
+    # XXX: Make this a weak reference?
     @timer = EM.add_periodic_timer(1) do
       on_timer
     end
@@ -54,7 +54,9 @@ class Failover
           logger.warn("Slave has previously been promoted to master.")
           @master.close_connection
           @subscriber.close_connection
-          emit(:connected, @slave)
+          enter_failed_state
+          @current_connection = @slave
+          emit(:connected, @current_connection)
         else
           if @master.host == result[:master_host] &&
              @master.port == result[:master_port].to_i
@@ -65,7 +67,7 @@ class Failover
             @slave.close_connection
             @subscriber.close_connection
             @current_connection = @master
-            fail
+            enter_failed_state
             logger.warn(
                 "Expected slave to be connected to #{@options[:master]}, but " +
                 "instead is #{result[:master_host]}:#{result[:master_port]}")
@@ -82,19 +84,14 @@ class Failover
       @subscriber.subscribe(channel)
     end
 
-    @subscriber.on(:message) do |channel, sender_id|
+    @subscriber.on(:message) do |channel, sender_id, arg|
       case channel
       when 'failover:promoted'
         on_slave_promoted(sender_id)
       when 'failover:gossip_request'
         on_gossip_request(sender_id)
       when 'failover:gossip_response'
-        # XXX: Should the response update the @last_pong value? This would
-        # probably be a good idea
-        if sender_id != client_id
-          logger.info("gossip response receieved from #{sender_id}")
-          take_master_off_probation
-        end
+        on_gossip_response(sender_id, arg)
       end
     end
   end
@@ -109,7 +106,8 @@ class Failover
     logger.warn("MASTER host failed. SLAVE promoted by #{sender_id}")
     @master.close_connection
     @subscriber.close_connection
-    fail
+    enter_failed_state
+
     @current_connection = @slave
     emit(:connected, @current_connection)
   end
@@ -119,7 +117,18 @@ class Failover
 
     logger.info("gossip request received from #{sender_id}")
     if seen_master_recently?
-      @slave.publish 'failover:gossip_response', client_id
+      @slave.publish 'failover:gossip_response', client_id, last_pong_age
+    end
+  end
+
+  def on_gossip_response(sender_id, pong_age)
+    return if sender_id == client_id
+
+    logger.info("gossip response receieved from #{sender_id}")
+    take_master_off_probation
+
+    if pong_age < last_pong
+      @last_pong = Time.now.to_i - pong_age
     end
   end
 
@@ -191,7 +200,7 @@ class Failover
     "#{Socket.gethostname}-#{$$}-#{@client_id}"
   end
 
-  def fail
+  def enter_failed_state
     @failed = true
     EM.cancel_timer(@timer)
   end
