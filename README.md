@@ -29,7 +29,21 @@ Usage
 The failover interface uses two callbacks: `connected` and `failover`.
 
 ```ruby
-failover = Failover.new
+failover = Failover.new(
+	# URL of master, required,
+	:master => 'redis://master.example.com:6379/0',
+
+	# URL of slave, required.
+	:slave => 'redis://master.example.com:6379/0',
+
+	# The number of seconds a master can go missing without being put on
+	# probation. Defaults to 10
+	:grace_timeout => 10,
+
+	# The number of seconds a master can be on probation before a failover
+	# is issued. Defaults to 10.
+	:period_timeout => 10
+	)
 
 # The connected callback will be made when an initial connection is made to
 # the master, and then again if a failover happens.
@@ -44,9 +58,3 @@ failover.on(:connected) do |redis|
   # Send an alert to an administrator
 end
 ```
-
-TODO
-====
-
- - configuration options
- - gemify

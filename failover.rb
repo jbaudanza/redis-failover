@@ -11,17 +11,23 @@ class Failover
   @@client_id = 0
 
   def initialize(options={})
-    @options = options
-    raise ArgumentError("master option required") unless @options[:master]
-    raise ArgumentError("slave option required") unless @options[:slave]
+    raise ArgumentError("master option required") unless options[:master]
+    raise ArgumentError("slave option required") unless options[:slave]
 
-    if !@options[:logger]
-      @options[:logger] = Logger.new(STDERR)
+    if !options[:logger]
+      options[:logger] = Logger.new(STDERR)
     end
+
+    @options = {
+      :ping_period => 1,
+      :probation_timeout => 10,
+      :grace_timeout => 10
+    }.merge(options)
 
     connect
 
-    @client_id = @@client_id += 1
+    @client_id = @@client_id
+    @@client_id += 1
   end
 
   def logger
@@ -37,8 +43,7 @@ class Failover
 
     @failed = false
 
-    # XXX: Magic number, and too often
-    @timer = EM.add_periodic_timer(1) do
+    @timer = EM.add_periodic_timer(@options[:ping_period]) do
       on_timer
     end
 
@@ -151,7 +156,7 @@ class Failover
     ping_master
 
     if is_on_probation?
-      if seconds_on_probation > 10
+      if seconds_on_probation > @options[:probation_timeout]
         promote_slave
       end
     elsif not seen_master_recently?
@@ -164,8 +169,7 @@ class Failover
   end
 
   def seen_master_recently?
-    # XXX Magic Number
-    last_pong_age < 10 if @last_pong
+    last_pong_age < @options[:grace_timeout] if @last_pong
   end
 
   def seconds_on_probation

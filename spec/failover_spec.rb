@@ -11,7 +11,11 @@ describe Failover do
 
   before(:each) do
     @options = {
-      :master => MASTER_URL, :slave => SLAVE_URL
+      :master => MASTER_URL,
+      :slave => SLAVE_URL,
+      :probation_timeout => 3,
+      :grace_timeout => 3,
+      :ping_period => 1
     }
   end
 
