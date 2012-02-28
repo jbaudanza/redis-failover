@@ -1,20 +1,22 @@
 Overfiew
 ========
 
-redis-failover provides failover functionality for EventMachine clients
-communicating with a master-slave redis configuration.
+redis-failover provides failover functionality for a system of EventMachine
+clients communicating with a master-slave redis configuration.
 
 How it works
 ============
 
-Each client maintains a connection to both the master and slave redis server.
+Each EventMachine client maintains a connection to both the master and slave
+redis servers.
 
-Each client periodically sends PING commands to the master. If the master fails
-to respond to a client, the client use a PUBSUB channel on the slave to ask if
-any other clients has seen the master.
+Each client will periodically send PING comamnds to the master. The slave
+connection will be used to by clients to gossip about the health of the master.
 
-If no other clients respond, the client will promote the SLAVE and issue a
-PUBLISH message to the other clients.
+If the master fails to respond to a client's PING, the client will issue
+a PUBSUB message to ask if any other clients have seen the master.  If no
+response is received, the client will promote the SLAVE and issue a PUBLISH
+message to the other clients of the promotion.
 
 Limitations
 ===========
